@@ -6,6 +6,7 @@ using Yuniql.Extensibility.BulkCsvParser;
 using System.Diagnostics;
 using System.Collections.Generic;
 using System;
+using System.Data.SqlTypes;
 
 //https://github.com/22222/CsvTextFieldParser
 namespace Yuniql.SqlServer
@@ -101,14 +102,23 @@ namespace Yuniql.SqlServer
                 while (!csvReader.EndOfData)
                 {
                     string[] fieldData = csvReader.ReadFields();
+                    object[] row = new object[fieldData.Length];
                     for (int i = 0; i < fieldData.Length; i++)
                     {
                         if (fieldData[i] == "" || fieldData[i] == "NULL")
                         {
-                            fieldData[i] = null;
+                            row[i] = null;
+                        }
+                        else if (csvDatatable.Columns[i].DataType == typeof(byte[]))
+                        {
+                            row[i] = Convert.FromHexString(fieldData[i]);
+                        }
+                        else
+                        {
+                            row[i] = fieldData[i];
                         }
                     }
-                    csvDatatable.Rows.Add(fieldData);
+                    csvDatatable.Rows.Add(row);
                 }
             }
 
@@ -147,7 +157,7 @@ namespace Yuniql.SqlServer
         private Dictionary<string, DbTypeMap> GetDestinationSchema(string tableName, string schemaName, SqlConnection connection, SqlTransaction transaction)
         {
             var types = new Dictionary<string, DbTypeMap>();
-            var sql = $"SELECT COLUMN_NAME, DATA_TYPE FROM INFORMATION_SCHEMA.columns c where c.TABLE_NAME = '{tableName}'";
+            var sql = $"SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.columns c where c.TABLE_NAME = '{tableName}'";
 
             using (SqlCommand command = new SqlCommand(sql, connection, transaction))
             {
@@ -157,10 +167,11 @@ namespace Yuniql.SqlServer
                     var dbTypeMap = new DbTypeMap
                     {
                         ColumnName = reader.GetString(0),
-                        SqlTypeName = reader.GetString(1)
+                        SqlTypeName = reader.GetString(1),
                     };
+                    var size = reader.GetSqlInt32(2);
 
-                    var dotnetType = MapSqlTypeToNative(dbTypeMap.SqlTypeName);
+                    var dotnetType = MapSqlTypeToNative(dbTypeMap.SqlTypeName, size);
                     if (dotnetType == null)
                     {
                         //not supported types: xml, rowversion, sql_variant, image, varbinary(max), binary, varbinary, timestamp
@@ -177,7 +188,7 @@ namespace Yuniql.SqlServer
             return types;
         }
 
-        private Type MapSqlTypeToNative(string dataType)
+        private Type MapSqlTypeToNative(string dataType, SqlInt32 size)
         {
             if (dataType == "char" || dataType == "nchar" || dataType == "text" || dataType == "ntext" || dataType == "varchar" || dataType == "nvarchar")
             {
@@ -202,6 +213,10 @@ namespace Yuniql.SqlServer
             else if (dataType == "uniqueidentifier")
             {
                 return typeof(Guid);
+            }
+            else if (dataType == "varbinary" && !size.IsNull && size.Value == -1)
+            {
+                return typeof(byte[]);
             }
             else if (dataType == "varbinary")
             {
